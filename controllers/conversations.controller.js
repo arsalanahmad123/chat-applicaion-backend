@@ -5,39 +5,77 @@ import setupSocket from '../socket/socket.js'
 
 const { io } = setupSocket()
 
-export const getConversations = async (req, res) => {
+export const getConversationsForSideBar = async (req, res) => {
     try {
-        const id = req.user._id
+        const id = req.user._id;
         const conversations = await Conversation.find({
             participants: { $in: [id] },
+        }).populate({
+            path: 'participants',
+            select: 'username email', 
+            match: { _id: { $ne: id } }
         })
-        res.status(200).json({ data: conversations })
+
+        res.status(200).json({ data: conversations });
     } catch (error) {
-        console.log('Error in getConversations controller: ', error.message)
-        res.status(500).json({ error: 'Internal server error' })
+        console.log('Error in getConversations controller: ', error.message);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+};
+
+export const getSingleConversation = async(req,res) => {
+    try {
+        const loggedInUser = req.user._id
+        const id = req.params.id 
+        const conversation = await Conversation.findById(id).populate({
+            path: 'participants',
+            select: 'username email',
+            match: {_id: {$ne: loggedInUser }}
+        }).populate({
+            path: 'messages',
+            populate: { 
+                path: 'receiver', select: 'username email' 
+            },
+        }).exec();
+
+        return res.status(200).json({
+            data: conversation
+        })
+
+    } catch (error) {
+        console.log("Error while getting single conversation",error.message)
+        return res.status(500).json({error: error.message})
     }
 }
 
+
 export const sendMessage = async (req, res) => {
     try {
-        const { message, receiverId } = req.body
-
+        const { message, receiverId,conversationID } = req.body
         const senderId = req.user._id
 
-        let conversation = await Conversation.findOne({
-            participants: { $all: [senderId, receiverId] },
-        })
+        let isNewConversation = false;
 
-        if (!conversation) {
-            conversation = await Conversation.create({
-                participants: [senderId, receiverId],
+        let conversation;
+        if(conversationID){
+            conversation = await Conversation.findOne({
+                _id: conversationID
             })
         }
 
+
+        if (!conversationID) {
+            conversation = await Conversation.create({
+                participants: [senderId, receiverId],
+            })
+            isNewConversation = true;
+        }
+
         const newMessage = new Message({
-            senderId,
-            receiverId,
+            sender: senderId,
+            receiver: receiverId,
             message,
+            conversationId: conversationID
         })
 
         if (newMessage) {
@@ -46,31 +84,32 @@ export const sendMessage = async (req, res) => {
 
         await Promise.all([conversation.save(), newMessage.save()])
 
-        io.to(receiverId).emit('message', newMessage)
-
         res.status(201).json(newMessage)
     } catch (error) {
         console.log('Error in sendMessage controller: ', error.message)
-        res.status(500).json({ error: 'Internal server error' })
+        res.status(500).json({ error: error.message })
     }
 }
 
-export const getMessages = async (req, res) => {
+export const deleteMessage = async (req, res) => {
     try {
-        const { id: userToChatId } = req.params
-        const senderId = req.user._id
+        const { messageId } = req.params;
 
-        const conversation = await Conversation.findOne({
-            participants: { $all: [senderId, userToChatId] },
-        }).populate('messages')
+        const message = await Message.findById(messageId);
 
-        if (!conversation) return res.status(200).json([])
+        if (!message) {
+            return res.status(404).json({ error: "Message not found" });
+        }
 
-        const messages = conversation.messages
+        if (message.sender.toString() !== req.user._id.toString()) {
+            return res.status(401).json({ error: "You can't delete this message" });
+        }
 
-        res.status(200).json({ data: messages })
+        await message.deleteOne();
+        res.status(204).send(); 
+
     } catch (error) {
-        console.log('Error in getMessages controller: ', error.message)
-        res.status(500).json({ error: 'Internal server error' })
+        console.error('Error in delete message controller:', error.message);
+        res.status(500).json({ error: 'Internal server error' });
     }
 }
