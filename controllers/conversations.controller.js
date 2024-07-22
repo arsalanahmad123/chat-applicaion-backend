@@ -1,5 +1,6 @@
 import Conversation from '../models/conversation.model.js'
 import Message from '../models/message.model.js'
+import User from "../models/user.model.js"
 
 import setupSocket from '../socket/socket.js'
 
@@ -27,7 +28,9 @@ export const getSingleConversation = async(req,res) => {
     try {
         const loggedInUser = req.user._id
         const id = req.params.id 
-        const conversation = await Conversation.findById(id).populate({
+        const conversation = await Conversation.findOne({
+            participants: [loggedInUser,id]
+        }).populate({
             path: 'participants',
             select: 'username email',
             match: {_id: {$ne: loggedInUser }}
@@ -37,6 +40,13 @@ export const getSingleConversation = async(req,res) => {
                 path: 'receiver', select: 'username email' 
             },
         }).exec();
+
+        if(!conversation){
+            const user = await User.findById(id)
+            return res.status(202).json({
+                user
+            })
+        }
 
         return res.status(200).json({
             data: conversation
@@ -51,45 +61,48 @@ export const getSingleConversation = async(req,res) => {
 
 export const sendMessage = async (req, res) => {
     try {
-        const { message, receiverId,conversationID } = req.body
-        const senderId = req.user._id
-
-        let isNewConversation = false;
+        const { message, receiverId, conversationID } = req.body;
+        const senderId = req.user._id;
 
         let conversation;
-        if(conversationID){
-            conversation = await Conversation.findOne({
-                _id: conversationID
-            })
-        }
+        let isNewConversation = false;
 
-
-        if (!conversationID) {
+        if (conversationID) {
+            conversation = await Conversation.findOne({ _id: conversationID });
+        } else {
             conversation = await Conversation.create({
                 participants: [senderId, receiverId],
-            })
+            });
             isNewConversation = true;
         }
 
-        const newMessage = new Message({
-            sender: senderId,
-            receiver: receiverId,
-            message,
-            conversationId: conversationID
-        })
+        if (conversation) {
+            const newMessage = new Message({
+                sender: senderId,
+                receiver: receiverId,
+                message,
+                conversationId: conversationID || conversation._id,
+            });
 
-        if (newMessage) {
-            conversation.messages.push(newMessage._id)
+            if (!conversation.messages) {
+                conversation.messages = [];
+            }
+
+            conversation.messages.push(newMessage._id);
+
+            await Promise.all([conversation.save(), newMessage.save()]);
+
+            return res.status(201).json(newMessage);
         }
 
-        await Promise.all([conversation.save(), newMessage.save()])
+        res.status(404).json({ error: "Conversation not found" });
 
-        res.status(201).json(newMessage)
     } catch (error) {
-        console.log('Error in sendMessage controller: ', error.message)
-        res.status(500).json({ error: error.message })
+        console.log('Error in sendMessage controller: ', error.message);
+        res.status(500).json({ error: error.message });
     }
-}
+};
+
 
 export const deleteMessage = async (req, res) => {
     try {
